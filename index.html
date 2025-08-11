@@ -3,13 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Detektor Orang (Webcam & Upload)</title>
+    <title>Perbandingan Detektor Wajah & Objek</title>
     <!-- Memuat Tailwind CSS untuk styling -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Memuat TensorFlow.js -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
-    <!-- Memuat model coco-ssd -->
+    <!-- Memuat TensorFlow.js Core & Backend -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.11.0/dist/tf-core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.11.0/dist/tf-backend-webgl.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.11.0/dist/tf-converter.min.js"></script>
+    <!-- Memuat Library untuk Deteksi Wajah (MediaPipe & BlazeFace) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-detection@1.0.2/dist/face-detection.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.min.js"></script>
+    <!-- Memuat Library untuk Deteksi Objek (COCO-SSD) -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+
     <style>
         .relative-container {
             position: relative;
@@ -39,8 +46,18 @@
 <body class="bg-gray-100 text-gray-800 flex flex-col items-center justify-center min-h-screen p-4 font-sans">
 
     <div class="w-full max-w-2xl bg-white p-6 rounded-lg shadow-lg text-center">
-        <h1 class="text-2xl md:text-3xl font-bold mb-2">Detektor Kerumunan</h1>
-        <p class="text-gray-600 mb-4">Deteksi "Orang" menggunakan Webcam atau Upload Gambar</p>
+        <h1 class="text-2xl md:text-3xl font-bold mb-2">Perbandingan Model Deteksi</h1>
+        <p class="text-gray-600 mb-4">Bandingkan Akurasi Detektor Wajah vs Detektor Objek</p>
+
+        <!-- Pilihan Model -->
+        <div class="mb-4">
+            <label for="model-selector" class="block text-sm font-medium text-gray-700 mb-1">Pilih Model AI:</label>
+            <select id="model-selector" class="w-full max-w-xs mx-auto p-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                <option value="mediapipe">MediaPipe Face Detector (Akurat)</option>
+                <option value="blazeface">BlazeFace (Cepat)</option>
+                <option value="coco-ssd">YOLO coco-ssd (Detektor Orang)</option>
+            </select>
+        </div>
 
         <!-- Tombol Tab untuk memilih mode -->
         <div class="flex justify-center border-b mb-4">
@@ -53,9 +70,6 @@
             <div class="relative-container rounded-lg overflow-hidden mb-4">
                 <video id="webcam" autoplay playsinline muted></video>
                 <canvas id="canvas-webcam"></canvas>
-                <div id="loading-message" class="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 text-white text-xl">
-                    <p>Sedang memanaskan mesin... Mohon tunggu.</p>
-                </div>
             </div>
             <div class="flex justify-center space-x-4">
                 <button id="start-button" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105" disabled>
@@ -79,7 +93,7 @@
             </button>
         </div>
         
-        <p id="status" class="mt-2 text-sm text-gray-500">Status: Model belum siap.</p>
+        <p id="status" class="mt-2 text-sm text-gray-500">Status: Pilih model untuk memulai.</p>
     </div>
 
     <script>
@@ -92,8 +106,8 @@
         const switchCameraButton = document.getElementById('switch-camera-button');
         const predictButton = document.getElementById('predict-button');
         const imageUploader = document.getElementById('image-uploader');
-        const loadingMessage = document.getElementById('loading-message');
         const statusText = document.getElementById('status');
+        const modelSelector = document.getElementById('model-selector');
         const tabWebcam = document.getElementById('tab-webcam');
         const tabUpload = document.getElementById('tab-upload');
         const webcamSection = document.getElementById('webcam-section');
@@ -103,77 +117,142 @@
         const ctxImage = canvasImage.getContext('2d');
         
         // Variabel state
-        let model = undefined;
-        let currentFacingMode = 'user'; // 'user' untuk kamera depan, 'environment' untuk belakang
-        let videoStream; // Untuk menyimpan stream kamera aktif
+        let detector = undefined;
+        let currentModelName = '';
+        let currentFacingMode = 'user';
+        let videoStream;
 
-        // Fungsi untuk menggambar kotak prediksi (bisa dipakai ulang)
+        // Fungsi untuk menggambar kotak prediksi
         function drawPredictions(predictions, canvasContext, canvasElement) {
             canvasContext.clearRect(0, 0, canvasElement.width, canvasElement.height);
             predictions.forEach(prediction => {
-                if (prediction.class === 'person') {
-                    canvasContext.strokeStyle = '#00FF00';
-                    canvasContext.lineWidth = 4;
-                    canvasContext.fillStyle = '#00FF00';
-                    canvasContext.font = '18px sans-serif';
+                let bbox, label, score;
 
-                    canvasContext.beginPath();
-                    canvasContext.rect(...prediction.bbox);
-                    canvasContext.stroke();
-
-                    const label = `Orang: ${Math.round(prediction.score * 100)}%`;
-                    canvasContext.fillText(label, prediction.bbox[0], prediction.bbox[1] > 20 ? prediction.bbox[1] - 5 : 20);
+                // Menyesuaikan format output dari model yang berbeda
+                switch(currentModelName) {
+                    case 'mediapipe':
+                        if (!prediction.box) return;
+                        const box = prediction.box;
+                        bbox = [box.xMin, box.yMin, box.width, box.height];
+                        label = 'Wajah';
+                        score = prediction.score;
+                        break;
+                    case 'blazeface':
+                        const startPoint = prediction.topLeft;
+                        const endPoint = prediction.bottomRight;
+                        bbox = [startPoint[0], startPoint[1], endPoint[0] - startPoint[0], endPoint[1] - startPoint[1]];
+                        label = 'Wajah';
+                        score = prediction.probability[0];
+                        break;
+                    case 'coco-ssd':
+                        if (prediction.class !== 'person') return;
+                        bbox = prediction.bbox;
+                        label = 'Orang';
+                        score = prediction.score;
+                        break;
+                    default:
+                        return;
                 }
+
+                // Menggambar kotak dan label
+                canvasContext.strokeStyle = (label === 'Wajah') ? '#34D399' : '#FBBF24'; // Hijau untuk Wajah, Kuning untuk Orang
+                canvasContext.lineWidth = 4;
+                canvasContext.fillStyle = canvasContext.strokeStyle;
+                canvasContext.font = '18px sans-serif';
+
+                canvasContext.beginPath();
+                canvasContext.rect(...bbox);
+                canvasContext.stroke();
+
+                const labelText = `${label}: ${Math.round(score * 100)}%`;
+                canvasContext.fillText(labelText, bbox[0], bbox[1] > 20 ? bbox[1] - 5 : 20);
             });
         }
 
-        // Fungsi utama untuk memuat model
-        async function setup() {
+        // Fungsi utama untuk memuat model yang dipilih
+        async function loadModel() {
+            if (detector && typeof detector.dispose === 'function') {
+                detector.dispose();
+            }
+            detector = undefined;
+            
+            const selectedModel = modelSelector.value;
+            currentModelName = selectedModel;
+            statusText.textContent = `Memuat model ${selectedModel}...`;
+            startButton.disabled = true;
+            predictButton.disabled = true;
+
             try {
-                model = await cocoSsd.load();
-                console.log("Model berhasil dimuat.");
-                statusText.textContent = "Status: Model siap.";
-                loadingMessage.style.display = 'none';
+                switch(selectedModel) {
+                    case 'mediapipe':
+                        const model = faceDetection.SupportedModels.MediaPipeFaceDetector;
+                        const detectorConfig = { runtime: 'tfjs' };
+                        detector = await faceDetection.createDetector(model, detectorConfig);
+                        break;
+                    case 'blazeface':
+                        detector = await blazeface.load();
+                        break;
+                    case 'coco-ssd':
+                        detector = await cocoSsd.load();
+                        break;
+                }
+                statusText.textContent = `Model ${selectedModel} siap digunakan.`;
                 startButton.disabled = false;
                 predictButton.disabled = false;
             } catch (error) {
                 console.error("Gagal memuat model: ", error);
-                statusText.textContent = "Error: Gagal memuat model.";
+                statusText.textContent = `Error: Gagal memuat model ${selectedModel}.`;
             }
         }
         
+        // Fungsi untuk menjalankan prediksi
+        async function runPrediction(inputElement) {
+            if (!detector) return null;
+            
+            let predictions;
+            switch(currentModelName) {
+                case 'coco-ssd':
+                    predictions = await detector.detect(inputElement);
+                    break;
+                case 'mediapipe':
+                    predictions = await detector.estimateFaces(inputElement, { flipHorizontal: false });
+                    break;
+                case 'blazeface':
+                    predictions = await detector.estimateFaces(inputElement, false);
+                    break;
+                default:
+                    predictions = [];
+            }
+            return predictions;
+        }
+
         // --- LOGIKA WEBCAM ---
         function stopWebcamStream() {
-            if (videoStream) {
-                videoStream.getTracks().forEach(track => {
-                    track.stop();
-                });
-            }
+            if (videoStream) videoStream.getTracks().forEach(track => track.stop());
         }
 
         async function startWebcam() {
-            stopWebcamStream(); // Hentikan stream lama sebelum memulai yang baru
-
+            stopWebcamStream();
             if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({
-                        'video': { facingMode: currentFacingMode }
-                    });
+                    const stream = await navigator.mediaDevices.getUserMedia({ 'video': { facingMode: currentFacingMode } });
                     videoStream = stream;
                     video.srcObject = stream;
                     video.addEventListener('loadeddata', predictWebcamLoop);
                 } catch (error) {
-                    alert(`Tidak bisa mengakses kamera (${currentFacingMode}). Mungkin kamera tidak tersedia atau izin ditolak.`);
+                    alert(`Tidak bisa mengakses kamera (${currentFacingMode}).`);
                 }
             }
         }
 
         async function predictWebcamLoop() {
-            if (!videoStream) return; // Hentikan loop jika stream tidak aktif
+            if (!videoStream || !detector) return;
             canvasWebcam.width = video.videoWidth;
             canvasWebcam.height = video.videoHeight;
-            const predictions = await model.detect(video);
-            drawPredictions(predictions, ctxWebcam, canvasWebcam);
+            const predictions = await runPrediction(video);
+            if (predictions) {
+                drawPredictions(predictions, ctxWebcam, canvasWebcam);
+            }
             requestAnimationFrame(predictWebcamLoop);
         }
         
@@ -185,9 +264,7 @@
                 reader.onload = (e) => {
                     imagePreview.src = e.target.result;
                     imagePreview.classList.remove('hidden');
-                    imagePreview.onload = () => {
-                        ctxImage.clearRect(0, 0, canvasImage.width, canvasImage.height);
-                    };
+                    imagePreview.onload = () => ctxImage.clearRect(0, 0, canvasImage.width, canvasImage.height);
                 };
                 reader.readAsDataURL(file);
             }
@@ -198,42 +275,42 @@
                 alert("Silakan unggah gambar terlebih dahulu.");
                 return;
             }
+            if (!detector) {
+                alert("Model belum dimuat. Silakan pilih model terlebih dahulu.");
+                return;
+            }
             canvasImage.width = imagePreview.width;
             canvasImage.height = imagePreview.height;
-            const predictions = await model.detect(imagePreview);
-            drawPredictions(predictions, ctxImage, canvasImage);
-            console.log("Deteksi pada gambar selesai.");
+            const predictions = await runPrediction(imagePreview);
+            if (predictions) {
+                drawPredictions(predictions, ctxImage, canvasImage);
+            }
         }
 
-        // --- Event Listeners untuk Tombol dan Tab ---
+        // --- Event Listeners ---
+        modelSelector.addEventListener('change', loadModel);
         startButton.addEventListener('click', () => {
             startWebcam();
             startButton.textContent = "Deteksi Webcam Aktif...";
             startButton.disabled = true;
-            switchCameraButton.classList.remove('hidden'); // Tampilkan tombol ganti kamera
+            switchCameraButton.classList.remove('hidden');
         });
-
         switchCameraButton.addEventListener('click', () => {
             currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
-            startWebcam(); // Mulai ulang webcam dengan mode baru
+            startWebcam();
         });
-
         predictButton.addEventListener('click', predictUploadedImage);
-
         tabWebcam.addEventListener('click', () => {
             webcamSection.classList.remove('hidden');
             uploadSection.classList.add('hidden');
             tabWebcam.classList.add('active');
             tabUpload.classList.remove('active');
         });
-
         tabUpload.addEventListener('click', () => {
             webcamSection.classList.add('hidden');
             uploadSection.classList.remove('hidden');
             tabWebcam.classList.remove('active');
             tabUpload.classList.add('active');
-            
-            // Hentikan stream webcam saat beralih tab untuk menghemat baterai
             stopWebcamStream();
             videoStream = null;
             startButton.textContent = "Mulai Deteksi Webcam";
@@ -241,8 +318,8 @@
             switchCameraButton.classList.add('hidden');
         });
 
-        // Memulai proses setup saat halaman dimuat
-        setup();
+        // Memuat model yang dipilih pertama kali
+        loadModel();
     </script>
 </body>
 </html>
