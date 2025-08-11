@@ -57,9 +57,14 @@
                     <p>Memuat model AI... Mohon tunggu.</p>
                 </div>
             </div>
-            <button id="start-button" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105" disabled>
-                Mulai Deteksi Webcam
-            </button>
+            <div class="flex justify-center space-x-4">
+                <button id="start-button" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105" disabled>
+                    Mulai Deteksi Webcam
+                </button>
+                <button id="switch-camera-button" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105 hidden">
+                    Ganti Kamera
+                </button>
+            </div>
         </div>
 
         <!-- Konten Upload Gambar -->
@@ -84,6 +89,7 @@
         const canvasWebcam = document.getElementById('canvas-webcam');
         const canvasImage = document.getElementById('canvas-image');
         const startButton = document.getElementById('start-button');
+        const switchCameraButton = document.getElementById('switch-camera-button');
         const predictButton = document.getElementById('predict-button');
         const imageUploader = document.getElementById('image-uploader');
         const loadingMessage = document.getElementById('loading-message');
@@ -95,7 +101,11 @@
 
         const ctxWebcam = canvasWebcam.getContext('2d');
         const ctxImage = canvasImage.getContext('2d');
+        
+        // Variabel state
         let model = undefined;
+        let currentFacingMode = 'user'; // 'user' untuk kamera depan, 'environment' untuk belakang
+        let videoStream; // Untuk menyimpan stream kamera aktif
 
         // Fungsi untuk menggambar kotak prediksi (bisa dipakai ulang)
         function drawPredictions(predictions, canvasContext, canvasElement) {
@@ -133,19 +143,33 @@
         }
         
         // --- LOGIKA WEBCAM ---
+        function stopWebcamStream() {
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => {
+                    track.stop();
+                });
+            }
+        }
+
         async function startWebcam() {
+            stopWebcamStream(); // Hentikan stream lama sebelum memulai yang baru
+
             if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ 'video': { facingMode: 'user' } });
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        'video': { facingMode: currentFacingMode }
+                    });
+                    videoStream = stream;
                     video.srcObject = stream;
                     video.addEventListener('loadeddata', predictWebcamLoop);
                 } catch (error) {
-                    alert("Tidak bisa mengakses kamera. Pastikan Anda memberikan izin.");
+                    alert(`Tidak bisa mengakses kamera (${currentFacingMode}). Mungkin kamera tidak tersedia atau izin ditolak.`);
                 }
             }
         }
 
         async function predictWebcamLoop() {
+            if (!videoStream) return; // Hentikan loop jika stream tidak aktif
             canvasWebcam.width = video.videoWidth;
             canvasWebcam.height = video.videoHeight;
             const predictions = await model.detect(video);
@@ -162,7 +186,6 @@
                     imagePreview.src = e.target.result;
                     imagePreview.classList.remove('hidden');
                     imagePreview.onload = () => {
-                         // Bersihkan canvas sebelumnya jika ada
                         ctxImage.clearRect(0, 0, canvasImage.width, canvasImage.height);
                     };
                 };
@@ -187,6 +210,12 @@
             startWebcam();
             startButton.textContent = "Deteksi Webcam Aktif...";
             startButton.disabled = true;
+            switchCameraButton.classList.remove('hidden'); // Tampilkan tombol ganti kamera
+        });
+
+        switchCameraButton.addEventListener('click', () => {
+            currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
+            startWebcam(); // Mulai ulang webcam dengan mode baru
         });
 
         predictButton.addEventListener('click', predictUploadedImage);
@@ -203,6 +232,13 @@
             uploadSection.classList.remove('hidden');
             tabWebcam.classList.remove('active');
             tabUpload.classList.add('active');
+            
+            // Hentikan stream webcam saat beralih tab untuk menghemat baterai
+            stopWebcamStream();
+            videoStream = null;
+            startButton.textContent = "Mulai Deteksi Webcam";
+            startButton.disabled = false;
+            switchCameraButton.classList.add('hidden');
         });
 
         // Memulai proses setup saat halaman dimuat
