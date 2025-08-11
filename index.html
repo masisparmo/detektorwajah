@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detektor Orang (Webcam & Upload)</title>
+    <!-- Memuat Tailwind CSS untuk styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Memuat TensorFlow.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    <!-- Memuat model coco-ssd -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+    <style>
+        .relative-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: auto;
+            background-color: #e5e7eb; /* bg-gray-200 */
+        }
+        #webcam, #image-preview {
+            width: 100%;
+            height: auto;
+            border-radius: 0.5rem;
+        }
+        #canvas-webcam, #canvas-image {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        .tab-button.active {
+            background-color: #3b82f6; /* bg-blue-600 */
+            color: white;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 flex flex-col items-center justify-center min-h-screen p-4 font-sans">
+
+    <div class="w-full max-w-2xl bg-white p-6 rounded-lg shadow-lg text-center">
+        <h1 class="text-2xl md:text-3xl font-bold mb-2">Detektor Kerumunan</h1>
+        <p class="text-gray-600 mb-4">Deteksi "Orang" menggunakan Webcam atau Upload Gambar</p>
+
+        <!-- Tombol Tab untuk memilih mode -->
+        <div class="flex justify-center border-b mb-4">
+            <button id="tab-webcam" class="tab-button py-2 px-4 -mb-px font-semibold text-gray-600 border-b-2 border-transparent rounded-t-lg hover:text-blue-500 active">Deteksi via Webcam</button>
+            <button id="tab-upload" class="tab-button py-2 px-4 -mb-px font-semibold text-gray-600 border-b-2 border-transparent rounded-t-lg hover:text-blue-500">Deteksi via Upload</button>
+        </div>
+
+        <!-- Konten Webcam -->
+        <div id="webcam-section">
+            <div class="relative-container rounded-lg overflow-hidden mb-4">
+                <video id="webcam" autoplay playsinline muted></video>
+                <canvas id="canvas-webcam"></canvas>
+                <div id="loading-message" class="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 text-white text-xl">
+                    <p>Memuat model AI... Mohon tunggu.</p>
+                </div>
+            </div>
+            <button id="start-button" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105" disabled>
+                Mulai Deteksi Webcam
+            </button>
+        </div>
+
+        <!-- Konten Upload Gambar -->
+        <div id="upload-section" class="hidden">
+            <div class="relative-container rounded-lg overflow-hidden mb-4">
+                <img id="image-preview" class="hidden" alt="Pratinjau Gambar"/>
+                <canvas id="canvas-image"></canvas>
+            </div>
+            <input type="file" id="image-uploader" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 mb-4"/>
+            <button id="predict-button" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105" disabled>
+                Deteksi Gambar
+            </button>
+        </div>
+        
+        <p id="status" class="mt-2 text-sm text-gray-500">Status: Model belum siap.</p>
+    </div>
+
+    <script>
+        // Mengambil elemen dari HTML
+        const video = document.getElementById('webcam');
+        const imagePreview = document.getElementById('image-preview');
+        const canvasWebcam = document.getElementById('canvas-webcam');
+        const canvasImage = document.getElementById('canvas-image');
+        const startButton = document.getElementById('start-button');
+        const predictButton = document.getElementById('predict-button');
+        const imageUploader = document.getElementById('image-uploader');
+        const loadingMessage = document.getElementById('loading-message');
+        const statusText = document.getElementById('status');
+        const tabWebcam = document.getElementById('tab-webcam');
+        const tabUpload = document.getElementById('tab-upload');
+        const webcamSection = document.getElementById('webcam-section');
+        const uploadSection = document.getElementById('upload-section');
+
+        const ctxWebcam = canvasWebcam.getContext('2d');
+        const ctxImage = canvasImage.getContext('2d');
+        let model = undefined;
+
+        // Fungsi untuk menggambar kotak prediksi (bisa dipakai ulang)
+        function drawPredictions(predictions, canvasContext, canvasElement) {
+            canvasContext.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            predictions.forEach(prediction => {
+                if (prediction.class === 'person') {
+                    canvasContext.strokeStyle = '#00FF00';
+                    canvasContext.lineWidth = 4;
+                    canvasContext.fillStyle = '#00FF00';
+                    canvasContext.font = '18px sans-serif';
+
+                    canvasContext.beginPath();
+                    canvasContext.rect(...prediction.bbox);
+                    canvasContext.stroke();
+
+                    const label = `Orang: ${Math.round(prediction.score * 100)}%`;
+                    canvasContext.fillText(label, prediction.bbox[0], prediction.bbox[1] > 20 ? prediction.bbox[1] - 5 : 20);
+                }
+            });
+        }
+
+        // Fungsi utama untuk memuat model
+        async function setup() {
+            try {
+                model = await cocoSsd.load();
+                console.log("Model berhasil dimuat.");
+                statusText.textContent = "Status: Model siap.";
+                loadingMessage.style.display = 'none';
+                startButton.disabled = false;
+                predictButton.disabled = false;
+            } catch (error) {
+                console.error("Gagal memuat model: ", error);
+                statusText.textContent = "Error: Gagal memuat model.";
+            }
+        }
+        
+        // --- LOGIKA WEBCAM ---
+        async function startWebcam() {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 'video': { facingMode: 'user' } });
+                    video.srcObject = stream;
+                    video.addEventListener('loadeddata', predictWebcamLoop);
+                } catch (error) {
+                    alert("Tidak bisa mengakses kamera. Pastikan Anda memberikan izin.");
+                }
+            }
+        }
+
+        async function predictWebcamLoop() {
+            canvasWebcam.width = video.videoWidth;
+            canvasWebcam.height = video.videoHeight;
+            const predictions = await model.detect(video);
+            drawPredictions(predictions, ctxWebcam, canvasWebcam);
+            requestAnimationFrame(predictWebcamLoop);
+        }
+        
+        // --- LOGIKA UPLOAD GAMBAR ---
+        imageUploader.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    imagePreview.src = e.target.result;
+                    imagePreview.classList.remove('hidden');
+                    imagePreview.onload = () => {
+                         // Bersihkan canvas sebelumnya jika ada
+                        ctxImage.clearRect(0, 0, canvasImage.width, canvasImage.height);
+                    };
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        async function predictUploadedImage() {
+            if (!imagePreview.src || imagePreview.classList.contains('hidden')) {
+                alert("Silakan unggah gambar terlebih dahulu.");
+                return;
+            }
+            canvasImage.width = imagePreview.width;
+            canvasImage.height = imagePreview.height;
+            const predictions = await model.detect(imagePreview);
+            drawPredictions(predictions, ctxImage, canvasImage);
+            console.log("Deteksi pada gambar selesai.");
+        }
+
+        // --- Event Listeners untuk Tombol dan Tab ---
+        startButton.addEventListener('click', () => {
+            startWebcam();
+            startButton.textContent = "Deteksi Webcam Aktif...";
+            startButton.disabled = true;
+        });
+
+        predictButton.addEventListener('click', predictUploadedImage);
+
+        tabWebcam.addEventListener('click', () => {
+            webcamSection.classList.remove('hidden');
+            uploadSection.classList.add('hidden');
+            tabWebcam.classList.add('active');
+            tabUpload.classList.remove('active');
+        });
+
+        tabUpload.addEventListener('click', () => {
+            webcamSection.classList.add('hidden');
+            uploadSection.classList.remove('hidden');
+            tabWebcam.classList.remove('active');
+            tabUpload.classList.add('active');
+        });
+
+        // Memulai proses setup saat halaman dimuat
+        setup();
+    </script>
+</body>
+</html>
